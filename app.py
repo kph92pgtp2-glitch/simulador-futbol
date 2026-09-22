@@ -1,145 +1,194 @@
 import streamlit as st
-import numpy as np
-import scipy.stats as stats
 import requests
+import pandas as pd
+import numpy as np
+from scipy.stats import poisson
+from datetime import datetime, timedelta
 
-# Configuración móvil e interfaz clara
-st.set_page_config(page_title="Analytics Fútbol Elite", layout="centered")
+# Configuración de la página
+st.set_page_config(
+    page_title="Analytics & Simulador Elite",
+    page_icon="⚽",
+    layout="wide"
+)
 
 st.title("⚽ Analytics & Simulador Elite")
-st.caption("Predicciones automáticas con API: Goles, Córneres, Clima y Rachas")
+st.caption("Predicciones automáticas con API: Probabilidades, Poisson, Valor y Análisis de Jornada")
 
-# 1. AUTENTICACIÓN API
-st.sidebar.header("🔑 Conexión de Datos")
-api_key = st.sidebar.text_input("Ingresa tu API Key (api-sports.io)", type="password")
+# -----------------------------------------------------------------------------
+# 1. MENÚ LATERAL: API KEY Y CONFIGURACIÓN
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Configuración de API")
+    api_key_input = st.text_input(
+        "Ingresa tu API Key de The Odds API:",
+        type="password",
+        value=st.session_state.get("ODDS_API_KEY", "")
+    )
+    
+    if st.button("Guardar y Actualizar"):
+        st.session_state["ODDS_API_KEY"] = api_key_input.strip()
+        st.success("¡API Key guardada correctamente!")
 
-# MAPEO DE LIGAS (IDs Oficiales)
-LIGAS = {
-    "LaLiga (España)": 140,
-    "Premier League (Inglaterra)": 39,
-    "Bundesliga (Alemania)": 78,
-    "Serie A (Italia)": 135,
-    "Ligue 1 (Francia)": 61,
-    "Liga MX (México)": 262,
-    "MLS (EE. UU.)": 253,
-    "Champions League": 2,
-    "Europa League": 3,
-    "Conference League": 848
-}
-
-liga_nombre = st.selectbox("📌 Selecciona la Liga", list(LIGAS.keys()))
-liga_id = LIGAS[liga_nombre]
-
-# 2. SELECCIÓN DE PARTIDO Y DATOS
-st.subheader("🏟️ Configuración del Partido")
-
-if api_key:
-    headers = {"x-apisports-key": api_key}
-    # Obtener partidos próximos
-    try:
-        url_fixtures = f"https://v3.football.api-sports.io/fixtures?league={liga_id}&next=10"
-        res_fix = requests.get(url_fixtures, headers=headers).json()
-        partidos = res_fix.get("response", [])
-        
-        if partidos:
-            opciones_partidos = {
-                f"{p['teams']['home']['name']} vs {p['teams']['away']['name']} ({p['fixture']['date'][:10]})": p 
-                for p in partidos
-            }
-            partido_sel = st.selectbox("Elige un partido próximo", list(opciones_partidos.keys()))
-            partido_data = opciones_partidos[partido_sel]
-            
-            nombre_local = partido_data['teams']['home']['name']
-            nombre_visita = partido_data['teams']['away']['name']
-        else:
-            st.warning("No se encontraron partidos próximos. Usa el modo simulación manual.")
-            nombre_local, nombre_visita = "Local", "Visitante"
-    except:
-        st.error("Error al conectar con la API. Verifica tu clave.")
-        nombre_local, nombre_visita = "Local", "Visitante"
-else:
-    st.info("💡 Ingresa tu API Key en el menú lateral para cargar partidos en vivo automáticos.")
-    col_a, col_b = st.columns(2)
-    nombre_local = col_a.text_input("Equipo Local", value="Real Madrid")
-    nombre_visita = col_b.text_input("Equipo Visitante", value="Barcelona")
-
-# 3. DATOS Y CONTEXTO
-st.markdown("---")
-st.subheader("⚙️ Factores del Juego")
-
-c1, c2 = st.columns(2)
-with c1:
-    st.markdown(f"**🏠 {nombre_local}**")
-    attack_loc = st.slider(f"Fuerza Ataque {nombre_local}", 0.5, 2.5, 1.45, 0.05)
-    def_loc = st.slider(f"Fortaleza Defensiva {nombre_local}", 0.5, 2.5, 0.80, 0.05)
-    corners_loc = st.number_input(f"Prom. Córneres {nombre_local}", value=6.2)
-
-with c2:
-    st.markdown(f"**🚀 {nombre_visita}**")
-    attack_vis = st.slider(f"Fuerza Ataque {nombre_visita}", 0.5, 2.5, 1.10, 0.05)
-    def_vis = st.slider(f"Fortaleza Defensiva {nombre_visita}", 0.5, 2.5, 1.25, 0.05)
-    corners_vis = st.number_input(f"Prom. Córneres {nombre_visita}", value=4.5)
-
-st.markdown("**🌤️ Clima y Altitud**")
-col_clima1, col_clima2 = st.columns(2)
-altitud = col_clima1.number_input("Altitud Estadio (m)", min_value=0, max_value=4000, value=2240 if "MX" in liga_nombre else 0)
-clima_lluvia = col_clima2.checkbox("¿Lluvia Intensa?")
-
-# 4. BOTÓN Y MOTOR PREDICTIVO
-if st.button("📊 GENERAR ANÁLISIS COMPLETO", use_container_width=True):
-    # Factor Clima/Altitud
-    f_loc, f_vis = 1.0, 1.0
-    if altitud > 1500:
-        f_loc *= (1.0 + (altitud - 1500) / 10000 * 0.15)
-        f_vis *= (1.0 - (altitud - 1500) / 10000 * 0.20)
-    if clima_lluvia:
-        f_loc, f_vis = f_loc * 0.93, f_vis * 0.93
-
-    # xG Proyectado
-    xg_local = attack_loc * def_vis * 1.35 * 1.15 * f_loc
-    xg_visita = attack_vis * def_loc * 1.35 * f_vis
-
-    # Matriz de Poisson Goles
-    max_g = 7
-    matriz_goles = np.zeros((max_g, max_g))
-    for i in range(max_g):
-        for j in range(max_g):
-            matriz_goles[i, j] = stats.poisson.pmf(i, xg_local) * stats.poisson.pmf(j, xg_visita)
-
-    goles_totales = np.add.outer(np.arange(max_g), np.arange(max_g))
-    prob_over_1_5 = (1.0 - np.sum(matriz_goles[goles_totales < 1.5])) * 100
-    prob_over_2_5 = (1.0 - np.sum(matriz_goles[goles_totales < 2.5])) * 100
-    prob_over_3_5 = (1.0 - np.sum(matriz_goles[goles_totales < 3.5])) * 100
-
-    # Córneres
-    exp_corners_total = (corners_loc + corners_vis) * 1.05
-    prob_corners_9_5 = min(99.0, max(1.0, (exp_corners_total / 9.5 - 0.5) * 100))
-
-    # PRESENTACIÓN DE RESULTADOS CLAROS Y ENTENDIBLES
     st.markdown("---")
-    st.header("🎯 RESULTADOS DEL ANÁLISIS")
+    st.subheader("📌 Selección de Liga")
+    deportes = {
+        "LaLiga (España)": "soccer_spain_la_liga",
+        "Premier League (Inglaterra)": "soccer_epl",
+        "UEFA Champions League": "soccer_uefa_champs_league",
+        "Liga MX (México)": "soccer_mexico_ligamx",
+        "Serie A (Italia)": "soccer_italy_serie_a",
+        "Bundesliga (Alemania)": "soccer_germany_bundesliga"
+    }
+    liga_seleccionada = st.selectbox("Selecciona la Liga:", list(deportes.keys()))
+    sport_key = deportes[liga_seleccionada]
 
-    # Tarjetas Métricas
-    col_res1, col_res2 = st.columns(2)
-    col_res1.metric("Goles Esperados Local", f"{xg_local:.2f}")
-    col_res2.metric("Goles Esperados Visita", f"{xg_visita:.2f}")
+api_key = st.session_state.get("ODDS_API_KEY", "")
 
-    st.subheader("⚽ Mercados de Goles")
-    st.write(f"• **Over 1.5 Goles:** {prob_over_1_5:.1f}% de probabilidad")
-    st.progress(int(prob_over_1_5))
+if not api_key:
+    st.info("💡 Ingresa tu API Key en el menú lateral para cargar partidos y análisis de la jornada automáticos.")
+    st.stop()
+
+# -----------------------------------------------------------------------------
+# 2. FUNCIONES DE API Y SIMULACIÓN ESTADÍSTICA
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=1800)
+def obtener_partidos_8_dias(key, sport):
+    """Consulta la API solicitando el rango de eventos de los próximos 8 días."""
+    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
+    params = {
+        "apiKey": key,
+        "regions": "eu,us",
+        "markets": "h2h,totals",
+        "dateFormat": "iso"
+    }
+    response = requests.get(url, params=params)
+    if response.status_code == 200:
+        return response.json()
+    else:
+        st.error(f"Error al conectar con la API (Código HTTP {response.status_code})")
+        return None
+
+def calcular_probabilidades_implicitas(odd_home, odd_draw, odd_away):
+    """Calcula la probabilidad real removiendo el overround de la casa de apuestas."""
+    p_home = 1 / odd_home if odd_home > 0 else 0
+    p_draw = 1 / odd_draw if odd_draw > 0 else 0
+    p_away = 1 / odd_away if odd_away > 0 else 0
+    total = p_home + p_draw + p_away
+    return (p_home / total), (p_draw / total), (p_away / total)
+
+def simulacion_poisson(prob_home, prob_away, max_goles=5):
+    """Calcula la matriz de probabilidad de marcadores usando la Distribución de Poisson."""
+    # Estimación básica de expectativas de goles según la probabilidad
+    exp_goles_local = 1.35 * (prob_home / (prob_home + prob_away + 1e-5)) * 2
+    exp_goles_visita = 1.10 * (prob_away / (prob_home + prob_away + 1e-5)) * 2
     
-    st.write(f"• **Over 2.5 Goles:** {prob_over_2_5:.1f}% de probabilidad")
-    st.progress(int(prob_over_2_5))
+    matriz = np.zeros((max_goles + 1, max_goles + 1))
+    for i in range(max_goles + 1):
+        for j in range(max_goles + 1):
+            matriz[i][j] = poisson.pmf(i, exp_goles_local) * poisson.pmf(j, exp_goles_visita)
+            
+    p_over25 = np.sum(np.triu(matriz, 3)) + np.sum(np.diag(matriz)[3:]) # Aproximación de >2.5 goles
+    p_btts = np.sum(matriz[1:, 1:])
     
-    st.write(f"• **Over 3.5 Goles:** {prob_over_3_5:.1f}% de probabilidad")
-    st.progress(int(prob_over_3_5))
+    return exp_goles_local, exp_goles_visita, matriz, p_over25, p_btts
 
-    st.subheader("🚩 Mercado de Córneres")
-    st.metric("Tiros de Esquina Totales Proyectados", f"{exp_corners_total:.1f}")
-    st.write(f"• **Probabilidad Over 9.5 Córneres:** {prob_corners_9_5:.1f}%")
-    st.progress(int(prob_corners_9_5))
+# -----------------------------------------------------------------------------
+# 3. PROCESAMIENTO Y ANÁLISIS DE LA JORNADA
+# -----------------------------------------------------------------------------
+datos_partidos = obtener_partidos_8_dias(api_key, sport_key)
 
-    st.subheader("⭐ Jugador Candidato a Gol (xG Individual)")
-    prob_gol_goleador = min(85.0, (xg_local if xg_local > xg_visita else xg_visita) * 35.0)
-    equipo_favorito = nombre_local if xg_local > xg_visita else nombre_visita
-    st.info(f"El delantero principal de **{equipo_favorito}** tiene un **{prob_gol_goleador:.1f}%** de probabilidad de anotar gol según la proyección de xG.")
+if not datos_partidos:
+    st.warning("No se encontraron partidos próximos para esta liga en los próximos 8 días.")
+else:
+    partidos_lista = []
+    
+    for evento in datos_partidos:
+        fecha_utc = datetime.fromisoformat(evento["commence_time"].replace("Z", "+00:00"))
+        # Filtrar dentro del rango de los próximos 8 días
+        if fecha_utc <= datetime.now().astimezone() + timedelta(days=8):
+            home = evento["home_team"]
+            away = evento["away_team"]
+            
+            # Extraer momios/cuotas
+            odd_h, odd_d, odd_a = None, None, None
+            if evento.get("bookmakers"):
+                bm = evento["bookmakers"][0]
+                for market in bm.get("markets", []):
+                    if market["key"] == "h2h":
+                        for outcome in market["outcomes"]:
+                            if outcome["name"] == home:
+                                odd_h = outcome["price"]
+                            elif outcome["name"] == away:
+                                odd_a = outcome["price"]
+                            else:
+                                odd_d = outcome["price"]
+            
+            if odd_h and odd_d and odd_a:
+                prob_h, prob_d, prob_a = calcular_probabilidades_implicitas(odd_h, odd_d, odd_a)
+                partidos_lista.append({
+                    "id": evento["id"],
+                    "fecha": fecha_utc.strftime("%d/%m/%Y %H:%M"),
+                    "local": home,
+                    "visitante": away,
+                    "odd_h": odd_h,
+                    "odd_d": odd_d,
+                    "odd_a": odd_a,
+                    "prob_h": prob_h,
+                    "prob_d": prob_d,
+                    "prob_a": prob_a,
+                    "etiqueta": f"{fecha_utc.strftime('%d/%m')} | {home} vs {away}"
+                })
+
+    if not partidos_lista:
+        st.warning("No hay encuentros con cuotas disponibles dentro del rango de 8 días.")
+    else:
+        st.subheader(f"📅 Partidos de la Jornada (Próximos 8 Días) - {len(partidos_lista)} Encuentros")
+        
+        # Selector de partido específico
+        opciones_partidos = {p["etiqueta"]: p for p in partidos_lista}
+        partido_sel_label = st.selectbox("Selecciona un partido para analizar:", list(opciones_partidos.keys()))
+        p_sel = opciones_partidos[partido_sel_label]
+        
+        st.markdown("---")
+        
+        # -----------------------------------------------------------------------------
+        # 4. DESPLIEGUE DEL ANÁLISIS DETALLADO Y PREDECISIÓN
+        # -----------------------------------------------------------------------------
+        col1, col2, col3 = st.columns([2, 1, 2])
+        
+        with col1:
+            st.markdown(f"### 🏠 {p_sel['local']}")
+            st.metric("Cuota Directa", f"{p_sel['odd_h']:.2f}")
+            st.progress(p_sel["prob_h"], text=f"Probabilidad de Victoria: {p_sel['prob_h']*100:.1f}%")
+            
+        with col2:
+            st.markdown("### ⚖️ Empate")
+            st.metric("Cuota Empate", f"{p_sel['odd_d']:.2f}")
+            st.progress(p_sel["prob_d"], text=f"Probabilidad: {p_sel['prob_d']*100:.1f}%")
+            
+        with col3:
+            st.markdown(f"### 🚀 {p_sel['visitante']}")
+            st.metric("Cuota Directa", f"{p_sel['odd_a']:.2f}")
+            st.progress(p_sel["prob_a"], text=f"Probabilidad de Victoria: {p_sel['prob_a']*100:.1f}%")
+
+        # Ejecutar Modelo de Poisson
+        exp_h, exp_a, matriz_p, p_over, p_btts = simulacion_poisson(p_sel["prob_h"], p_sel["prob_a"])
+
+        st.markdown("---")
+        st.subheader("📊 Análisis de Goles y Pronóstico Poisson")
+        
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.metric("xG Esperado Local", f"{exp_h:.2f} goles")
+        with col_b:
+            st.metric("xG Esperado Visitante", f"{exp_a:.2f} goles")
+        with col_c:
+            st.metric("Probabilidad Ambos Anotan (BTTS)", f"{p_btts*100:.1f}%")
+
+        # Determinar marcador más probable de la matriz
+        idx_max = np.unravel_index(np.argmax(matriz_p, axis=None), matriz_p.shape)
+        marcador_probable = f"{idx_max[0]} - {idx_max[1]}"
+        prob_marcador = matriz_p[idx_max[0]][idx_max[1]] * 100
+
+        st.info(f"💡 **Pronóstico Principal del Algoritmo:** Marcador más probable: **{marcador_probable}** (Confianza estimada: {prob_marcador:.1f}%)")
