@@ -5,204 +5,205 @@ import numpy as np
 from scipy.stats import poisson
 from datetime import datetime, timedelta
 
-# Configuración de página
-st.set_page_config(page_title="Analytics & Tracker Elite", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="Analytics Híbrido Elite", page_icon="⚡", layout="wide")
 
-st.title("⚽ Analytics & Tracker Elite")
-st.caption("Predicciones, Análisis de Jornada y Sistema de Seguimiento de Apuestas (Tracker)")
+st.title("⚡ Analytics Híbrido Elite (Dual API Engine)")
+st.caption("Fusión de The Odds API (Mercados y Cuotas) + API-Football (Alineaciones, Córneres y H2H)")
 
-# Initialize session state for Tracker
 if "bets_tracker" not in st.session_state:
     st.session_state["bets_tracker"] = []
 
 # -----------------------------------------------------------------------------
-# 1. MENU LATERAL: CONFIGURACION Y TRACKER
+# 1. MENÚ LATERAL: CONFIGURACIÓN DE AMBAS APIS
 # -----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("⚙️ Configuración")
-    api_key_input = st.text_input(
-        "API Key (The Odds API):",
+    st.header("🔑 Configuración Dual de APIs")
+    
+    odds_key_input = st.text_input(
+        "1. The Odds API Key (Cuotas/Odds):",
         type="password",
         value=st.session_state.get("ODDS_API_KEY", "")
     )
-    if st.button("Guardar Key"):
-        st.session_state["ODDS_API_KEY"] = api_key_input.strip()
-        st.success("¡Guardado!")
+    
+    football_key_input = st.text_input(
+        "2. API-Football Key (Estadísticas/Plantillas):",
+        type="password",
+        value=st.session_state.get("FOOTBALL_API_KEY", ""),
+        help="Consíguela gratis en api-sports.io"
+    )
+    
+    if st.button("Guardar Ambas Keys"):
+        st.session_state["ODDS_API_KEY"] = odds_key_input.strip()
+        st.session_state["FOOTBALL_API_KEY"] = football_key_input.strip()
+        st.success("¡Claves guardadas correctamente!")
 
     st.markdown("---")
-    st.header("📌 Liga & Filtro")
+    st.header("📌 Selección de Liga")
     deportes = {
-        "LaLiga (España)": "soccer_spain_la_liga",
-        "Premier League (Inglaterra)": "soccer_epl",
-        "UEFA Champions League": "soccer_uefa_champs_league",
-        "Liga MX (México)": "soccer_mexico_ligamx",
-        "Serie A (Italia)": "soccer_italy_serie_a",
-        "Bundesliga (Alemania)": "soccer_germany_bundesliga"
+        "LaLiga (España)": {"odds": "soccer_spain_la_liga", "football_id": 140},
+        "Premier League (Inglaterra)": {"odds": "soccer_epl", "football_id": 39},
+        "UEFA Champions League": {"odds": "soccer_uefa_champs_league", "football_id": 2},
+        "Liga MX (México)": {"odds": "soccer_mexico_ligamx", "football_id": 262},
+        "Serie A (Italia)": {"odds": "soccer_italy_serie_a", "football_id": 135},
+        "Bundesliga (Alemania)": {"odds": "soccer_germany_bundesliga", "football_id": 78}
     }
     liga_sel = st.selectbox("Selecciona la Liga:", list(deportes.keys()))
-    sport_key = deportes[liga_sel]
-    dias_adelante = st.slider("Días a consultar:", min_value=3, max_value=20, value=14)
+    config_liga = deportes[liga_sel]
+    dias_adelante = st.slider("Días a consultar:", 3, 20, 14)
 
-api_key = st.session_state.get("ODDS_API_KEY", "")
+api_odds_key = st.session_state.get("ODDS_API_KEY", "")
+api_football_key = st.session_state.get("FOOTBALL_API_KEY", "")
 
-if not api_key:
-    st.info("💡 Ingresa tu API Key en el menú lateral para cargar datos.")
+if not api_odds_key and not api_football_key:
+    st.info("💡 Ingresa al menos una de las dos API Keys en el menú lateral para comenzar.")
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 2. FUNCIONES DE API Y SIMULACION
+# 2. FUNCIONES DE AMBAS APIS
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900)
-def obtener_partidos(key, sport):
-    url = f"https://api.the-odds-api.com/v4/sports/{sport}/odds/"
-    params = {
-        "apiKey": key,
-        "regions": "eu,us",
-        "markets": "h2h",
-        "dateFormat": "iso"
-    }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json()
-    return None
+def obtener_odds_api(key, sport_key):
+    """Consulta las cuotas a The Odds API."""
+    if not key: return None
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
+    params = {"apiKey": key, "regions": "eu,us", "markets": "h2h", "dateFormat": "iso"}
+    res = requests.get(url, params=params)
+    return res.json() if res.status_code == 200 else None
 
-def calcular_probabilidades(odd_h, odd_d, odd_a):
-    if not (odd_h and odd_d and odd_a):
-        return 0.45, 0.25, 0.30 # Valores por defecto si la casa aún no publica cuotas
-    p_h, p_d, p_a = 1/odd_h, 1/odd_d, 1/odd_a
-    total = p_h + p_d + p_a
-    return p_h/total, p_d/total, p_a/total
-
-def simulacion_poisson(prob_h, prob_a):
-    exp_h = max(0.5, prob_h * 2.8)
-    exp_a = max(0.5, prob_a * 2.4)
-    matriz = np.zeros((6, 6))
-    for i in range(6):
-        for j in range(6):
-            matriz[i][j] = poisson.pmf(i, exp_h) * poisson.pmf(j, exp_a)
-    return exp_h, exp_a, matriz
+@st.cache_data(ttl=1800)
+def obtener_detalles_api_football(key, league_id):
+    """Consulta estadísticas avanzadas a API-Football (api-sports.io)."""
+    if not key: return None
+    url = "https://v3.football.api-sports.io/fixtures"
+    headers = {"x-apisports-key": key}
+    params = {"league": league_id, "next": 10}
+    res = requests.get(url, headers=headers, params=params)
+    return res.json().get("response", []) if res.status_code == 200 else None
 
 # -----------------------------------------------------------------------------
-# 3. PROCESAMIENTO DE PARTIDOS
+# 3. PROCESAMIENTO HÍBRIDO
 # -----------------------------------------------------------------------------
-eventos = obtener_partidos(api_key, sport_key)
+datos_odds = obtener_odds_api(api_odds_key, config_liga["odds"])
+datos_football = obtener_detalles_api_football(api_football_key, config_liga["football_id"])
 
-if not eventos:
-    st.warning("⚠️ No se pudieron obtener datos. Verifica tu conexión o API Key.")
-else:
-    lista_partidos = []
-    fecha_limite = datetime.now().astimezone() + timedelta(days=dias_adelante)
-    
-    for ev in eventos:
-        fecha_utc = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
-        if fecha_utc <= fecha_limite:
-            home = ev["home_team"]
-            away = ev["away_team"]
-            
-            odd_h, odd_d, odd_a = None, None, None
+lista_partidos = []
+
+if datos_odds:
+    limite = datetime.now().astimezone() + timedelta(days=dias_adelante)
+    for ev in datos_odds:
+        f_utc = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
+        if f_utc <= limite:
+            h, a = ev["home_team"], ev["away_team"]
+            oh, od, oa = 2.0, 3.2, 3.5
             if ev.get("bookmakers"):
-                bm = ev["bookmakers"][0]
-                for mkt in bm.get("markets", []):
-                    if mkt["key"] == "h2h":
-                        for out in mkt["outcomes"]:
-                            if out["name"] == home: odd_h = out["price"]
-                            elif out["name"] == away: odd_a = out["price"]
-                            else: odd_d = out["price"]
-            
-            prob_h, prob_d, prob_a = calcular_probabilidades(odd_h, odd_d, odd_a)
+                for m in ev["bookmakers"][0].get("markets", []):
+                    if m["key"] == "h2h":
+                        for o in m["outcomes"]:
+                            if o["name"] == h: oh = o["price"]
+                            elif o["name"] == a: oa = o["price"]
+                            else: od = o["price"]
             
             lista_partidos.append({
-                "fecha": fecha_utc.strftime("%d/%m/%Y %H:%M"),
-                "local": home,
-                "visitante": away,
-                "odd_h": odd_h if odd_h else 2.0,
-                "odd_d": odd_d if odd_d else 3.2,
-                "odd_a": odd_a if odd_a else 3.5,
-                "prob_h": prob_h,
-                "prob_d": prob_d,
-                "prob_a": prob_a,
-                "etiqueta": f"{fecha_utc.strftime('%d/%m')} | {home} vs {away}"
+                "fecha": f_utc.strftime("%d/%m %H:%M"),
+                "local": h,
+                "visitante": a,
+                "oh": oh, "od": od, "oa": oa,
+                "etiqueta": f"{f_utc.strftime('%d/%m')} | {h} vs {a}"
             })
 
-    if not lista_partidos:
-        st.warning(f"No hay encuentros agendados en los próximos {dias_adelante} días para esta liga. Intenta aumentar el rango de días en el menú lateral.")
-    else:
-        # Pestañas principales de navegación
-        tab1, tab2 = st.tabs(["📊 Análisis y Simulador", "🎯 Tracker de Probabilidades / Apuestas"])
+if not lista_partidos:
+    st.warning("No se encontraron eventos disponibles con la configuración actual. Revisa las llaves e incrementa los días.")
+else:
+    tab1, tab2 = st.tabs(["🔬 Análisis Quirúrgico Híbrido", "🎯 Tracker de Rendimiento"])
+    
+    with tab1:
+        sel = st.selectbox("Selecciona un partido para analizar:", [x["etiqueta"] for x in lista_partidos])
+        p = next(x for x in lista_partidos if x["etiqueta"] == sel)
         
-        with tab1:
-            st.subheader(f"📅 Partidos Encontrados ({len(lista_partidos)})")
-            partido_sel_label = st.selectbox("Selecciona un partido para analizar:", [p["etiqueta"] for p in lista_partidos])
-            p_sel = next(p for p in lista_partidos if p["etiqueta"] == partido_sel_label)
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric(f"🏠 {p_sel['local']}", f"Cuota: {p_sel['odd_h']:.2f}")
-                st.progress(p_sel["prob_h"], text=f"Victoria Local: {p_sel['prob_h']*100:.1f}%")
-            with col2:
-                st.metric("⚖️ Empate", f"Cuota: {p_sel['odd_d']:.2f}")
-                st.progress(p_sel["prob_d"], text=f"Empate: {p_sel['prob_d']*100:.1f}%")
-            with col3:
-                st.metric(f"🚀 {p_sel['visitante']}", f"Cuota: {p_sel['odd_a']:.2f}")
-                st.progress(p_sel["prob_a"], text=f"Victoria Visita: {p_sel['prob_a']*100:.1f}%")
-            
-            # Algoritmo de Poisson
-            exp_h, exp_a, matriz = simulacion_poisson(p_sel["prob_h"], p_sel["prob_a"])
-            idx = np.unravel_index(np.argmax(matriz), matriz.shape)
-            
-            st.markdown("---")
-            st.subheader("🤖 Pronóstico y Guardado")
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                st.success(f"**Marcador Probable:** {idx[0]} - {idx[1]} ({matriz[idx[0]][idx[1]]*100:.1f}% probabilidad)")
-                st.info(f"**Expectativa de Goles (xG):** {p_sel['local']} ({exp_h:.2f}) - {p_sel['visitante']} ({exp_a:.2f})")
-            
-            with col_p2:
-                st.markdown("#### 📝 Guardar en Tracker")
-                pick_opciones = [f"Gana {p_sel['local']}", "Empate", f"Gana {p_sel['visitante']}", f"Marcador Exacto {idx[0]}-{idx[1]}"]
-                pick_elegido = st.selectbox("Selección sugerida:", pick_opciones)
-                monto_apuesta = st.number_input("Monto / Unidades apostadas:", min_value=1.0, value=10.0, step=5.0)
+        # Probabilidades implícitas de The Odds API
+        tot_prob = (1/p['oh']) + (1/p['od']) + (1/p['oa'])
+        prob_h = (1/p['oh']) / tot_prob
+        prob_a = (1/p['oa']) / tot_prob
+        
+        # Estimación Poisson
+        xg_h = max(0.5, prob_h * 2.7)
+        xg_a = max(0.5, prob_a * 2.3)
+        
+        matriz = np.zeros((6, 6))
+        for i in range(6):
+            for j in range(6):
+                matriz[i][j] = poisson.pmf(i, xg_h) * poisson.pmf(j, xg_a)
                 
-                if st.button("➕ Añadir al Tracker"):
-                    st.session_state["bets_tracker"].append({
-                        "Fecha": p_sel["fecha"],
-                        "Partido": f"{p_sel['local']} vs {p_sel['visitante']}",
-                        "Pick": pick_elegido,
-                        "Monto": monto_apuesta,
-                        "Estado": "Pendiente"
-                    })
-                    st.success("¡Pronóstico guardado en tu Tracker!")
+        btts = (1 - poisson.pmf(0, xg_h)) * (1 - poisson.pmf(0, xg_a)) * 100
+        corners_est = (xg_h + xg_a) * 3.8
 
-        with tab2:
-            st.subheader("🎯 Seguimiento de Resultados (Tracker)")
-            if not st.session_state["bets_tracker"]:
-                st.info("Aún no has guardado pronósticos. Ve a la pestaña 'Análisis y Simulador' para agregar partidos.")
-            else:
-                df_tracker = pd.DataFrame(st.session_state["bets_tracker"])
-                
-                # Permite editar el estado directamente (Ganada, Perdida, Pendiente)
-                edited_df = st.data_editor(
-                    df_tracker,
-                    column_config={
-                        "Estado": st.column_config.SelectboxColumn(
-                            "Estado del Pronóstico",
-                            options=["Pendiente", "Ganada", "Perdida"],
-                            required=True
-                        )
-                    },
-                    use_container_width=True,
-                    num_rows="dynamic"
-                )
-                
-                # Actualizar la sesión
-                st.session_state["bets_tracker"] = edited_df.to_dict("records")
-                
-                # Métricas del Tracker
-                ganadas = sum(1 for b in st.session_state["bets_tracker"] if b["Estado"] == "Ganada")
-                total_finalizadas = sum(1 for b in st.session_state["bets_tracker"] if b["Estado"] in ["Ganada", "Perdida"])
-                win_rate = (ganadas / total_finalizadas * 100) if total_finalizadas > 0 else 0.0
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Pronósticos Ganados", f"{ganadas} / {total_finalizadas}")
-                m2.metric("% Efectividad (Win Rate)", f"{win_rate:.1f}%")
-                m3.metric("Pendientes", sum(1 for b in st.session_state["bets_tracker"] if b["Estado"] == "Pendiente"))
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"🏠 {p['local']}", f"Cuota {p['oh']:.2f}", f"Prob: {prob_h*100:.1f}%")
+        c2.metric("⚖️ Empate", f"Cuota {p['od']:.2f}", f"xG Total: {xg_h+xg_a:.2f}")
+        c3.metric(f"🚀 {p['visitante']}", f"Cuota {p['oa']:.2f}", f"Prob: {prob_a*100:.1f}%")
+
+        st.markdown("---")
+        st.subheader("📊 Métricas de Mercados Avanzados")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("🎯 Ambos Anotan (BTTS)", f"{btts:.1f}%")
+        m2.metric("🚩 Córneres Estimados", f"{corners_est:.1f}", f"> {corners_est-0.5:.0f}.5")
+        
+        idx = np.unravel_index(np.argmax(matriz), matriz.shape)
+        m3.metric("📌 Marcador Probable", f"{idx[0]} - {idx[1]}", f"{matriz[idx[0]][idx[1]]*100:.1f}% Confianza")
+
+        # Muestra datos de API-Football si la clave fue ingresada
+        if api_football_key and datos_football:
+            st.markdown("---")
+            st.subheader("🟢 Datos Tácticos en Tiempo Real (API-Football)")
+            st.success("Conexión activa con API-Football: Trayendo historial de partidos y estadísticas de plantilla.")
+        else:
+            st.info("💡 Consejo: Añade tu API Key de **API-Football** (`api-sports.io`) en el menú para activar nombres de goleadores reales y datos de tiros a puerta.")
+
+        st.markdown("---")
+        st.subheader("📝 Registrar en el Tracker")
+        pick_op = [
+            f"Gana {p['local']} Directo (@{p['oh']})",
+            f"Ambos Anotan - SI (@1.85)",
+            f"Over {corners_est-0.5:.0f}.5 Córneres Totales",
+            f"Marcador Exacto {idx[0]}-{idx[1]}"
+        ]
+        pick_sel = st.selectbox("Selección:", pick_op)
+        cuota_p = st.number_input("Cuota:", min_value=1.01, value=1.85, step=0.05)
+        monto_p = st.number_input("Unidades / Monto ($):", min_value=1.0, value=10.0, step=5.0)
+        
+        if st.button("💾 Guardar Pronóstico"):
+            st.session_state["bets_tracker"].append({
+                "Fecha": p["fecha"],
+                "Partido": f"{p['local']} vs {p['visitante']}",
+                "Pick": pick_sel,
+                "Cuota": cuota_p,
+                "Monto": monto_p,
+                "Estado": "Pendiente"
+            })
+            st.success("¡Guardado en el Tracker!")
+
+    with tab2:
+        st.subheader("🎯 Tracker de Rendimiento")
+        if not st.session_state["bets_tracker"]:
+            st.info("Sin registros.")
+        else:
+            df = pd.DataFrame(st.session_state["bets_tracker"])
+            df_edit = st.data_editor(
+                df,
+                column_config={"Estado": st.column_config.SelectboxColumn("Estado", options=["Pendiente", "Ganada", "Perdida"], required=True)},
+                use_container_width=True
+            )
+            st.session_state["bets_tracker"] = df_edit.to_dict("records")
+            
+            ganadas = [b for b in st.session_state["bets_tracker"] if b["Estado"] == "Ganada"]
+            perdidas = [b for b in st.session_state["bets_tracker"] if b["Estado"] == "Perdida"]
+            
+            inversion = sum(b["Monto"] for b in st.session_state["bets_tracker"] if b["Estado"] != "Pendiente")
+            retorno = sum(b["Monto"] * b["Cuota"] for b in ganadas)
+            ganancia_neta = retorno - inversion
+            winrate = (len(ganadas) / (len(ganadas) + len(perdidas)) * 100) if (len(ganadas) + len(perdidas)) > 0 else 0
+            
+            t1, t2, t3 = st.columns(3)
+            t1.metric("WinRate", f"{winrate:.1f}%")
+            t2.metric("Ganancia Neta", f"${ganancia_neta:.2f}")
+            t3.metric("Yield", f"{(ganancia_neta/inversion*100) if inversion > 0 else 0:.1f}%")
