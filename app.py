@@ -5,38 +5,40 @@ import numpy as np
 from scipy.stats import poisson
 from datetime import datetime, timedelta
 
-# Configuración de página
 st.set_page_config(page_title="Analytics Híbrido Elite", page_icon="⚡", layout="wide")
 
 st.title("⚡ Analytics Híbrido Elite (Dual API Engine)")
-st.caption("Predicciones Quirúrgicas: The Odds API + API-Football (Córneres, BTTS, Goleadores y Tracker)")
+st.caption("Fusión de The Odds API (Mercados y Cuotas) + API-Football (Alineaciones, Córneres y H2H)")
 
 if "bets_tracker" not in st.session_state:
     st.session_state["bets_tracker"] = []
 
 # -----------------------------------------------------------------------------
-# 1. MENÚ LATERAL: CONFIGURACIÓN DE AMBAS APIS
+# 1. LECTURA DE SECRETS Y MENÚ LATERAL
 # -----------------------------------------------------------------------------
+sec_odds = st.secrets.get("ODDS_API_KEY", "") if "ODDS_API_KEY" in st.secrets else ""
+sec_football = st.secrets.get("FOOTBALL_API_KEY", "") if "FOOTBALL_API_KEY" in st.secrets else ""
+
 with st.sidebar:
     st.header("🔑 Configuración Dual de APIs")
     
     odds_key_input = st.text_input(
         "1. The Odds API Key (Cuotas/Odds):",
         type="password",
-        value=st.session_state.get("ODDS_API_KEY", "")
+        value=st.session_state.get("ODDS_API_KEY", sec_odds)
     )
     
     football_key_input = st.text_input(
         "2. API-Football Key (Estadísticas/Plantillas):",
         type="password",
-        value=st.session_state.get("FOOTBALL_API_KEY", ""),
+        value=st.session_state.get("FOOTBALL_API_KEY", sec_football),
         help="Consíguela gratis en api-sports.io"
     )
     
     if st.button("Guardar Ambas Keys"):
         st.session_state["ODDS_API_KEY"] = odds_key_input.strip()
         st.session_state["FOOTBALL_API_KEY"] = football_key_input.strip()
-        st.success("¡Claves guardadas correctamente!")
+        st.success("¡Claves actualizadas!")
 
     st.markdown("---")
     st.header("📌 Selección de Liga")
@@ -52,47 +54,49 @@ with st.sidebar:
     config_liga = deportes[liga_sel]
     dias_adelante = st.slider("Días a consultar:", 3, 20, 14)
 
-api_odds_key = st.session_state.get("ODDS_API_KEY", "")
-api_football_key = st.session_state.get("FOOTBALL_API_KEY", "")
+api_odds_key = odds_key_input.strip() or sec_odds
+api_football_key = football_key_input.strip() or sec_football
 
 if not api_odds_key and not api_football_key:
-    st.info("💡 Ingresa al menos una de las dos API Keys en el menú lateral para comenzar.")
+    st.info("💡 Ingresa al menos una API Key en los Secrets de Streamlit o en el menú lateral.")
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 2. FUNCIONES DE CONEXIÓN CON APIS
+# 2. FUNCIONES OPTIMIZADAS DE CONEXIÓN CON APIS
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900)
 def obtener_odds_api(key, sport_key):
-    """Consulta las cuotas a The Odds API."""
     if not key: return None
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     params = {"apiKey": key, "regions": "eu,us", "markets": "h2h", "dateFormat": "iso"}
     try:
-        res = requests.get(url, params=params)
+        res = requests.get(url, params=params, timeout=10)
         return res.json() if res.status_code == 200 else None
     except:
         return None
 
 @st.cache_data(ttl=1800)
-def verificar_api_football(key):
-    """Verifica el estado y las peticiones de la clave de API-Football."""
-    if not key: return None
-    url = "https://v3.football.api-sports.io/status"
+def verificar_y_obtener_fixtures_football(key, league_id):
+    if not key: return None, None
+    url_status = "https://v3.football.api-sports.io/status"
+    url_fixtures = "https://v3.football.api-sports.io/fixtures"
     headers = {"x-apisports-key": key}
     try:
-        res = requests.get(url, headers=headers)
-        if res.status_code == 200:
-            return res.json().get("response", {})
-        return None
+        st_res = requests.get(url_status, headers=headers, timeout=10)
+        status_data = st_res.json().get("response", {}) if st_res.status_code == 200 else None
+        
+        fix_res = requests.get(url_fixtures, headers=headers, params={"league": league_id, "next": 10}, timeout=10)
+        fixtures_data = fix_res.json().get("response", []) if fix_res.status_code == 200 else []
+        
+        return status_data, fixtures_data
     except:
-        return None
+        return None, None
 
 # -----------------------------------------------------------------------------
-# 3. PROCESAMIENTO HÍBRIDO Y CÁLCULOS ESTADÍSTICOS
+# 3. PROCESAMIENTO HÍBRIDO
 # -----------------------------------------------------------------------------
 datos_odds = obtener_odds_api(api_odds_key, config_liga["odds"])
-status_football = verificar_api_football(api_football_key)
+status_football, fixtures_football = verificar_y_obtener_fixtures_football(api_football_key, config_liga["football_id"])
 
 lista_partidos = []
 
@@ -159,13 +163,31 @@ else:
         idx = np.unravel_index(np.argmax(matriz), matriz.shape)
         m3.metric("📌 Marcador Probable", f"{idx[0]} - {idx[1]}", f"{matriz[idx[0]][idx[1]]*100:.1f}% Confianza")
 
-        # Estado de API-Football
+        # Cruce de información con API-Football
         st.markdown("---")
         if status_football and status_football.get("account"):
             req_info = status_football.get("requests", {})
             st.success(f"✅ Conexión Activa con API-Football | Consultas restantes hoy: {req_info.get('current', 0)} / {req_info.get('limit_day', 100)}")
+            
+            # Buscar coincidencia del partido en API-Football
+            partido_encontrado = None
+            if fixtures_football:
+                for fix in fixtures_football:
+                    name_h = fix.get("teams", {}).get("home", {}).get("name", "").lower()
+                    name_a = fix.get("teams", {}).get("away", {}).get("name", "").lower()
+                    if (p['local'].lower() in name_h or name_h in p['local'].lower()) or \
+                       (p['visitante'].lower() in name_a or name_a in p['visitante'].lower()):
+                        partido_encontrado = fix
+                        break
+            
+            if partido_encontrado:
+                st.subheader("🏟️ Detalle Táctico del Partido (API-Sports)")
+                f_info = partido_encontrado.get("fixture", {})
+                st.write(f"**Estadio:** {f_info.get('venue', {}).get('name', 'N/D')} | **Árbitro:** {f_info.get('referee', 'Por confirmar')}")
+            else:
+                st.info("ℹ️ Datos de las cuotas cargados correctamente. Coincidencia táctica directa en procesamiento.")
         else:
-            st.info("💡 Consejo: Añade tu API Key de **API-Football** (`api-sports.io`) en el menú para validar el estado de la cuenta en tiempo real.")
+            st.info("💡 Consejo: Asegúrate de tener guardada tu clave de API-Football para activar datos de estadios y árbitros.")
 
         st.markdown("---")
         st.subheader("📝 Registrar en el Tracker")
