@@ -5,10 +5,11 @@ import numpy as np
 from scipy.stats import poisson
 from datetime import datetime, timedelta
 
+# Configuración de página
 st.set_page_config(page_title="Analytics Híbrido Elite", page_icon="⚡", layout="wide")
 
 st.title("⚡ Analytics Híbrido Elite (Dual API Engine)")
-st.caption("Fusión de The Odds API (Mercados y Cuotas) + API-Football (Alineaciones, Córneres y H2H)")
+st.caption("Predicciones Quirúrgicas: The Odds API + API-Football (Córneres, BTTS, Goleadores y Tracker)")
 
 if "bets_tracker" not in st.session_state:
     st.session_state["bets_tracker"] = []
@@ -59,7 +60,7 @@ if not api_odds_key and not api_football_key:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 2. FUNCIONES DE AMBAS APIS
+# 2. FUNCIONES DE CONEXIÓN CON APIS
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=900)
 def obtener_odds_api(key, sport_key):
@@ -67,24 +68,31 @@ def obtener_odds_api(key, sport_key):
     if not key: return None
     url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
     params = {"apiKey": key, "regions": "eu,us", "markets": "h2h", "dateFormat": "iso"}
-    res = requests.get(url, params=params)
-    return res.json() if res.status_code == 200 else None
+    try:
+        res = requests.get(url, params=params)
+        return res.json() if res.status_code == 200 else None
+    except:
+        return None
 
 @st.cache_data(ttl=1800)
-def obtener_detalles_api_football(key, league_id):
-    """Consulta estadísticas avanzadas a API-Football (api-sports.io)."""
+def verificar_api_football(key):
+    """Verifica el estado y las peticiones de la clave de API-Football."""
     if not key: return None
-    url = "https://v3.football.api-sports.io/fixtures"
+    url = "https://v3.football.api-sports.io/status"
     headers = {"x-apisports-key": key}
-    params = {"league": league_id, "next": 10}
-    res = requests.get(url, headers=headers, params=params)
-    return res.json().get("response", []) if res.status_code == 200 else None
+    try:
+        res = requests.get(url, headers=headers)
+        if res.status_code == 200:
+            return res.json().get("response", {})
+        return None
+    except:
+        return None
 
 # -----------------------------------------------------------------------------
-# 3. PROCESAMIENTO HÍBRIDO
+# 3. PROCESAMIENTO HÍBRIDO Y CÁLCULOS ESTADÍSTICOS
 # -----------------------------------------------------------------------------
 datos_odds = obtener_odds_api(api_odds_key, config_liga["odds"])
-datos_football = obtener_detalles_api_football(api_football_key, config_liga["football_id"])
+status_football = verificar_api_football(api_football_key)
 
 lista_partidos = []
 
@@ -120,12 +128,12 @@ else:
         sel = st.selectbox("Selecciona un partido para analizar:", [x["etiqueta"] for x in lista_partidos])
         p = next(x for x in lista_partidos if x["etiqueta"] == sel)
         
-        # Probabilidades implícitas de The Odds API
+        # Probabilidades implícitas
         tot_prob = (1/p['oh']) + (1/p['od']) + (1/p['oa'])
         prob_h = (1/p['oh']) / tot_prob
         prob_a = (1/p['oa']) / tot_prob
         
-        # Estimación Poisson
+        # Estimación Poisson (xG)
         xg_h = max(0.5, prob_h * 2.7)
         xg_a = max(0.5, prob_a * 2.3)
         
@@ -137,10 +145,10 @@ else:
         btts = (1 - poisson.pmf(0, xg_h)) * (1 - poisson.pmf(0, xg_a)) * 100
         corners_est = (xg_h + xg_a) * 3.8
 
-        c1, c2, c3 = st.columns(3)
-        c1.metric(f"🏠 {p['local']}", f"Cuota {p['oh']:.2f}", f"Prob: {prob_h*100:.1f}%")
-        c2.metric("⚖️ Empate", f"Cuota {p['od']:.2f}", f"xG Total: {xg_h+xg_a:.2f}")
-        c3.metric(f"🚀 {p['visitante']}", f"Cuota {p['oa']:.2f}", f"Prob: {prob_a*100:.1f}%")
+        col1, col2, col3 = st.columns(3)
+        col1.metric(f"🏠 {p['local']}", f"Cuota {p['oh']:.2f}", f"Prob: {prob_h*100:.1f}%")
+        col2.metric("⚖️ Empate", f"Cuota {p['od']:.2f}", f"xG Total: {xg_h+xg_a:.2f}")
+        col3.metric(f"🚀 {p['visitante']}", f"Cuota {p['oa']:.2f}", f"Prob: {prob_a*100:.1f}%")
 
         st.markdown("---")
         st.subheader("📊 Métricas de Mercados Avanzados")
@@ -151,13 +159,13 @@ else:
         idx = np.unravel_index(np.argmax(matriz), matriz.shape)
         m3.metric("📌 Marcador Probable", f"{idx[0]} - {idx[1]}", f"{matriz[idx[0]][idx[1]]*100:.1f}% Confianza")
 
-        # Muestra datos de API-Football si la clave fue ingresada
-        if api_football_key and datos_football:
-            st.markdown("---")
-            st.subheader("🟢 Datos Tácticos en Tiempo Real (API-Football)")
-            st.success("Conexión activa con API-Football: Trayendo historial de partidos y estadísticas de plantilla.")
+        # Estado de API-Football
+        st.markdown("---")
+        if status_football and status_football.get("account"):
+            req_info = status_football.get("requests", {})
+            st.success(f"✅ Conexión Activa con API-Football | Consultas restantes hoy: {req_info.get('current', 0)} / {req_info.get('limit_day', 100)}")
         else:
-            st.info("💡 Consejo: Añade tu API Key de **API-Football** (`api-sports.io`) en el menú para activar nombres de goleadores reales y datos de tiros a puerta.")
+            st.info("💡 Consejo: Añade tu API Key de **API-Football** (`api-sports.io`) en el menú para validar el estado de la cuenta en tiempo real.")
 
         st.markdown("---")
         st.subheader("📝 Registrar en el Tracker")
