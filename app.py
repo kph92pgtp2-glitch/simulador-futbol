@@ -7,7 +7,7 @@ st.set_page_config(page_title="Analytics Fútbol Elite", layout="centered")
 st.title("⚽ Analytics & Simulador Fútbol")
 st.caption("Predicciones claras de Goles, Córneres y Altitud calibradas por liga")
 
-# 1. PARAMETROS CALIBRADOS POR LIGA (PROMEDIOS REALES)
+# 1. PARÁMETROS CALIBRADOS POR LIGA (PROMEDIOS REALES)
 DATOS_LIGAS = {
     "Liga MX (México)": {"prom_goles": 2.45, "prom_corners": 9.2},
     "LaLiga (España)": {"prom_goles": 2.50, "prom_corners": 9.5},
@@ -29,24 +29,28 @@ st.markdown("---")
 st.subheader("🏟️ Configuración del Partido")
 
 col_a, col_b = st.columns(2)
-nombre_local = col_a.text_input("Equipo Local", value="América" if "MX" in liga_nombre else "Real Madrid")
-nombre_visita = col_b.text_input("Equipo Visitante", value="Chivas" if "MX" in liga_nombre else "Barcelona")
+nombre_local = col_a.text_input("Equipo Local", value="", placeholder="Ej. Local")
+nombre_visita = col_b.text_input("Equipo Visitante", value="", placeholder="Ej. Visitante")
+
+# Nombres dinámicos para los controles
+lbl_local = nombre_local.strip() if nombre_local.strip() else "Local"
+lbl_visita = nombre_visita.strip() if nombre_visita.strip() else "Visitante"
 
 st.markdown("---")
 st.subheader("⚙️ Nivel de los Equipos")
 
 c1, c2 = st.columns(2)
 with c1:
-    st.markdown(f"**🏠 {nombre_local}**")
-    attack_loc = st.slider(f"Ataque {nombre_local}", 0.5, 2.5, 1.30, 0.05)
-    def_loc = st.slider(f"Defensa {nombre_local}", 0.5, 2.5, 0.90, 0.05)
-    corners_loc = st.number_input(f"Prom. Córneres {nombre_local}", value=5.1)
+    st.markdown(f"**🏠 {lbl_local}**")
+    attack_loc = st.slider(f"Ataque {lbl_local}", 0.5, 2.5, 1.30, 0.05)
+    def_loc = st.slider(f"Defensa {lbl_local}", 0.5, 2.5, 0.90, 0.05)
+    corners_loc = st.number_input(f"Prom. Córneres {lbl_local}", value=5.1, step=0.1)
 
 with c2:
-    st.markdown(f"**🚀 {nombre_visita}**")
-    attack_vis = st.slider(f"Ataque {nombre_visita}", 0.5, 2.5, 1.10, 0.05)
-    def_vis = st.slider(f"Defensa {nombre_visita}", 0.5, 2.5, 1.10, 0.05)
-    corners_vis = st.number_input(f"Prom. Córneres {nombre_visita}", value=4.2)
+    st.markdown(f"**🚀 {lbl_visita}**")
+    attack_vis = st.slider(f"Ataque {lbl_visita}", 0.5, 2.5, 1.10, 0.05)
+    def_vis = st.slider(f"Defensa {lbl_visita}", 0.5, 2.5, 1.10, 0.05)
+    corners_vis = st.number_input(f"Prom. Córneres {lbl_visita}", value=4.2, step=0.1)
 
 st.markdown("**🌤️ Clima y Altitud**")
 col_clima1, col_clima2 = st.columns(2)
@@ -55,13 +59,12 @@ clima_lluvia = col_clima2.checkbox("¿Lluvia Intensa?")
 
 # MOTOR PREDICTIVO DIRECTO
 if st.button("📊 GENERAR ANÁLISIS COMPLETO", use_container_width=True):
-    # Promedio base por equipo según la liga elegida
     base_goles = info_liga["prom_goles"] / 2.0
     
-    # Factor Altitud Ajustado (Sin exagerar el local)
+    # Factor Altitud
     f_loc, f_vis = 1.0, 1.0
     if altitud > 1800:
-        f_vis *= 0.88 # El visitante se desgasta más por la altura
+        f_vis *= 0.88
         f_loc *= 1.02
     
     if clima_lluvia:
@@ -72,7 +75,7 @@ if st.button("📊 GENERAR ANÁLISIS COMPLETO", use_container_width=True):
     xg_local = attack_loc * def_vis * base_goles * 1.08 * f_loc
     xg_visita = attack_vis * def_loc * base_goles * f_vis
 
-    # Matriz de Poisson para Probabilidades
+    # Matriz de Poisson
     max_g = 7
     matriz_goles = np.zeros((max_g, max_g))
     for i in range(max_g):
@@ -88,13 +91,13 @@ if st.button("📊 GENERAR ANÁLISIS COMPLETO", use_container_width=True):
     exp_corners_total = corners_loc + corners_vis
     prob_corners_9_5 = (1.0 - stats.poisson.cdf(9, exp_corners_total)) * 100
 
-    # PRESENTACIÓN LIMPIA Y CLARA
+    # PRESENTACIÓN
     st.markdown("---")
-    st.header("🎯 RESULTADOS DEL ANÁLISIS")
+    st.header(f"🎯 RESULTADOS: {lbl_local} vs {lbl_visita}")
 
     col_res1, col_res2 = st.columns(2)
-    col_res1.metric("Goles Esperados Local", f"{xg_local:.2f}")
-    col_res2.metric("Goles Esperados Visita", f"{xg_visita:.2f}")
+    col_res1.metric(f"Goles Esperados {lbl_local}", f"{xg_local:.2f}")
+    col_res2.metric(f"Goles Esperados {lbl_visita}", f"{xg_visita:.2f}")
 
     st.subheader("⚽ Mercados de Goles")
     st.write(f"• **Over 1.5 Goles:** {prob_over_1_5:.1f}% de probabilidad")
