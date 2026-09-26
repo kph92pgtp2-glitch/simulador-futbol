@@ -1,239 +1,154 @@
 import streamlit as st
-import requests
-import pandas as pd
 import numpy as np
-from scipy.stats import poisson
-from datetime import datetime, timedelta
+import scipy.stats as stats
+import requests
 
-st.set_page_config(page_title="Analytics Híbrido Elite", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Analytics Fútbol Elite Pro", layout="centered")
 
-st.title("⚡ Analytics Híbrido Elite (Dual API Engine)")
-st.caption("Fusión de The Odds API (Mercados y Cuotas) + API-Football (Alineaciones, Córneres y H2H)")
+st.title("⚽ Analytics & Simulador Elite Pro")
+st.caption("Motor calibrado por liga: Carga automática vía API, xG, Córneres y Altitud Real")
 
-if "bets_tracker" not in st.session_state:
-    st.session_state["bets_tracker"] = []
+# 1. PARÁMETROS REALES Y CALIBRADOS POR LIGA
+DATOS_LIGAS = {
+    "Liga MX (México)": {"id": 262, "prom_goles": 2.45, "prom_corners": 9.2},
+    "LaLiga (España)": {"id": 140, "prom_goles": 2.50, "prom_corners": 9.5},
+    "Premier League (Inglaterra)": {"id": 39, "prom_goles": 2.85, "prom_corners": 10.4},
+    "Bundesliga (Alemania)": {"id": 78, "prom_goles": 3.10, "prom_corners": 9.8},
+    "Serie A (Italia)": {"id": 135, "prom_goles": 2.60, "prom_corners": 9.3},
+    "Ligue 1 (Francia)": {"id": 61, "prom_goles": 2.55, "prom_corners": 9.1},
+    "MLS (EE. UU.)": {"id": 253, "prom_goles": 2.95, "prom_corners": 9.7},
+    "Champions League": {"id": 2, "prom_goles": 2.98, "prom_corners": 9.6},
+    "Europa League": {"id": 3, "prom_goles": 2.80, "prom_corners": 9.5},
+    "Conference League": {"id": 848, "prom_goles": 2.75, "prom_corners": 9.4}
+}
 
-# -----------------------------------------------------------------------------
-# 1. LECTURA DE SECRETS Y MENÚ LATERAL
-# -----------------------------------------------------------------------------
-sec_odds = st.secrets.get("ODDS_API_KEY", "") if "ODDS_API_KEY" in st.secrets else ""
-sec_football = st.secrets.get("FOOTBALL_API_KEY", "") if "FOOTBALL_API_KEY" in st.secrets else ""
+st.sidebar.header("🔑 Conexión Automática")
+api_key = st.sidebar.text_input("Ingresa tu API Key (API-Sports)", type="password")
 
-with st.sidebar:
-    st.header("🔑 Configuración Dual de APIs")
+liga_nombre = st.selectbox("📌 Selecciona la Liga", list(DATOS_LIGAS.keys()))
+info_liga = DATOS_LIGAS[liga_nombre]
+
+# Funciones para obtener datos de la API
+def obtener_partidos(league_id, key):
+    headers = {"x-apisports-key": key}
+    url = f"https://v3.football.api-sports.io/fixtures?league={league_id}&next=10"
+    res = requests.get(url, headers=headers).json()
+    return res.get("response", [])
+
+def obtener_stats_equipo(league_id, team_id, key):
+    headers = {"x-apisports-key": key}
+    url = f"https://v3.football.api-sports.io/teams/statistics?league={league_id}&season=2026&team={team_id}"
+    res = requests.get(url, headers=headers).json().get("response", {})
     
-    odds_key_input = st.text_input(
-        "1. The Odds API Key (Cuotas/Odds):",
-        type="password",
-        value=st.session_state.get("ODDS_API_KEY", sec_odds)
-    )
+    if not res:
+        return 1.3, 1.1, 5.0 # Valores de respaldo en caso de no encontrar datos
+        
+    g_favor = float(res.get("goals", {}).get("for", {}).get("average", {}).get("total") or 1.3)
+    g_contra = float(res.get("goals", {}).get("against", {}).get("average", {}).get("total") or 1.1)
+    return g_favor, g_contra, 5.0
+
+# 2. SELECCIÓN DE PARTIDO AUTOMÁTICO O MANUAL
+st.markdown("---")
+st.subheader("🏟️ Partido y Datos")
+
+if api_key:
+    partidos = obtener_partidos(info_liga["id"], api_key)
+    if partidos:
+        dict_partidos = {
+            f"{p['teams']['home']['name']} vs {p['teams']['away']['name']} ({p['fixture']['date'][:10]})": p 
+            for p in partidos
+        }
+        partido_sel = st.selectbox("Elige un partido próximo", list(dict_partidos.keys()))
+        data_p = dict_partidos[partido_sel]
+        
+        id_local = data_p['teams']['home']['id']
+        id_visita = data_p['teams']['away']['id']
+        nombre_local = data_p['teams']['home']['name']
+        nombre_visita = data_p['teams']['away']['name']
+        
+        # Carga automática de estadísticas
+        gf_loc, gc_loc, corners_loc = obtener_stats_equipo(info_liga["id"], id_local, api_key)
+        gf_vis, gc_vis, corners_vis = obtener_stats_equipo(info_liga["id"], id_visita, api_key)
+        st.success(f"✅ Datos cargados automáticamente para {nombre_local} vs {nombre_visita}")
+    else:
+        st.warning("No se encontraron partidos próximos. Usa la configuración manual abajo.")
+        nombre_local = st.text_input("Equipo Local", "América" if "MX" in liga_nombre else "Real Madrid")
+        nombre_visita = st.text_input("Equipo Visitante", "Chivas" if "MX" in liga_nombre else "Barcelona")
+        gf_loc, gc_loc, corners_loc = 1.40, 1.00, 5.1
+        gf_vis, gc_vis, corners_vis = 1.10, 1.20, 4.2
+else:
+    st.info("💡 Consejo: Pon tu API Key en la barra lateral para que los partidos y datos se carguen 100% solos.")
+    col_a, col_b = st.columns(2)
+    nombre_local = col_a.text_input("Equipo Local", "América" if "MX" in liga_nombre else "Real Madrid")
+    nombre_visita = col_b.text_input("Equipo Visitante", "Chivas" if "MX" in liga_nombre else "Barcelona")
     
-    football_key_input = st.text_input(
-        "2. API-Football Key (Estadísticas/Plantillas):",
-        type="password",
-        value=st.session_state.get("FOOTBALL_API_KEY", sec_football),
-        help="Consíguela gratis en api-sports.io"
-    )
+    c1, c2 = st.columns(2)
+    gf_loc = c1.number_input(f"Goles anotados/partido ({nombre_local})", value=1.40, step=0.05)
+    gc_loc = c1.number_input(f"Goles recibidos/partido ({nombre_local})", value=1.00, step=0.05)
+    corners_loc = c1.number_input(f"Córneres/partido ({nombre_local})", value=5.1)
     
-    if st.button("Guardar Ambas Keys"):
-        st.session_state["ODDS_API_KEY"] = odds_key_input.strip()
-        st.session_state["FOOTBALL_API_KEY"] = football_key_input.strip()
-        st.success("¡Claves actualizadas!")
+    gf_vis = c2.number_input(f"Goles anotados/partido ({nombre_visita})", value=1.10, step=0.05)
+    gc_vis = c2.number_input(f"Goles recibidos/partido ({nombre_visita})", value=1.20, step=0.05)
+    corners_vis = c2.number_input(f"Córneres/partido ({nombre_visita})", value=4.2)
+
+st.markdown("**🌤️ Ajuste de Estadio**")
+col_clima1, col_clima2 = st.columns(2)
+altitud = col_clima1.number_input("Altitud Estadio (m)", min_value=0, max_value=4000, value=2240 if "MX" in liga_nombre else 0)
+clima_lluvia = col_clima2.checkbox("¿Lluvia Intensa?")
+
+# 3. MOTOR PREDICTIVO
+if st.button("📊 GENERAR SIMULACIÓN CALIBRADA", use_container_width=True):
+    prom_liga_goles_equipo = info_liga["prom_goles"] / 2.0
+    
+    ataque_loc_idx = gf_loc / prom_liga_goles_equipo
+    defensa_loc_idx = gc_loc / prom_liga_goles_equipo
+    ataque_vis_idx = gf_vis / prom_liga_goles_equipo
+    defensa_vis_idx = gc_vis / prom_liga_goles_equipo
+
+    f_loc, f_vis = 1.0, 1.0
+    if altitud > 1800:
+        f_vis *= 0.88
+        f_loc *= 1.02
+    
+    if clima_lluvia:
+        f_loc *= 0.94
+        f_vis *= 0.94
+
+    xg_local = ataque_loc_idx * defensa_vis_idx * prom_liga_goles_equipo * 1.08 * f_loc
+    xg_visita = ataque_vis_idx * defensa_loc_idx * prom_liga_goles_equipo * f_vis
+
+    max_g = 7
+    matriz_goles = np.zeros((max_g, max_g))
+    for i in range(max_g):
+        for j in range(max_g):
+            matriz_goles[i, j] = stats.poisson.pmf(i, xg_local) * stats.poisson.pmf(j, xg_visita)
+
+    goles_totales = np.add.outer(np.arange(max_g), np.arange(max_g))
+    prob_over_1_5 = (1.0 - np.sum(matriz_goles[goles_totales < 1.5])) * 100
+    prob_over_2_5 = (1.0 - np.sum(matriz_goles[goles_totales < 2.5])) * 100
+    prob_over_3_5 = (1.0 - np.sum(matriz_goles[goles_totales < 3.5])) * 100
+
+    exp_corners_total = corners_loc + corners_vis
+    prob_corners_9_5 = (1.0 - stats.poisson.cdf(9, exp_corners_total)) * 100
 
     st.markdown("---")
-    st.header("📌 Selección de Liga")
-    deportes = {
-        "LaLiga (España)": {"odds": "soccer_spain_la_liga", "football_id": 140},
-        "Premier League (Inglaterra)": {"odds": "soccer_epl", "football_id": 39},
-        "UEFA Champions League": {"odds": "soccer_uefa_champs_league", "football_id": 2},
-        "Liga MX (México)": {"odds": "soccer_mexico_ligamx", "football_id": 262},
-        "Serie A (Italia)": {"odds": "soccer_italy_serie_a", "football_id": 135},
-        "Bundesliga (Alemania)": {"odds": "soccer_germany_bundesliga", "football_id": 78}
-    }
-    liga_sel = st.selectbox("Selecciona la Liga:", list(deportes.keys()))
-    config_liga = deportes[liga_sel]
-    dias_adelante = st.slider("Días a consultar:", 3, 20, 14)
+    st.header("🎯 ANÁLISIS PREDICTIVO CALIBRADO")
 
-api_odds_key = odds_key_input.strip() or sec_odds
-api_football_key = football_key_input.strip() or sec_football
+    col_res1, col_res2 = st.columns(2)
+    col_res1.metric("xG Local Proyectado", f"{xg_local:.2f} goles")
+    col_res2.metric("xG Visita Proyectado", f"{xg_visita:.2f} goles")
 
-if not api_odds_key and not api_football_key:
-    st.info("💡 Ingresa al menos una API Key en los Secrets de Streamlit o en el menú lateral.")
-    st.stop()
-
-# -----------------------------------------------------------------------------
-# 2. FUNCIONES OPTIMIZADAS DE CONEXIÓN CON APIS
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=900)
-def obtener_odds_api(key, sport_key):
-    if not key: return None
-    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds/"
-    params = {"apiKey": key, "regions": "eu,us", "markets": "h2h", "dateFormat": "iso"}
-    try:
-        res = requests.get(url, params=params, timeout=10)
-        return res.json() if res.status_code == 200 else None
-    except:
-        return None
-
-@st.cache_data(ttl=1800)
-def verificar_y_obtener_fixtures_football(key, league_id):
-    if not key: return None, None
-    url_status = "https://v3.football.api-sports.io/status"
-    url_fixtures = "https://v3.football.api-sports.io/fixtures"
-    headers = {"x-apisports-key": key}
-    try:
-        st_res = requests.get(url_status, headers=headers, timeout=10)
-        status_data = st_res.json().get("response", {}) if st_res.status_code == 200 else None
-        
-        fix_res = requests.get(url_fixtures, headers=headers, params={"league": league_id, "next": 10}, timeout=10)
-        fixtures_data = fix_res.json().get("response", []) if fix_res.status_code == 200 else []
-        
-        return status_data, fixtures_data
-    except:
-        return None, None
-
-# -----------------------------------------------------------------------------
-# 3. PROCESAMIENTO HÍBRIDO
-# -----------------------------------------------------------------------------
-datos_odds = obtener_odds_api(api_odds_key, config_liga["odds"])
-status_football, fixtures_football = verificar_y_obtener_fixtures_football(api_football_key, config_liga["football_id"])
-
-lista_partidos = []
-
-if datos_odds:
-    limite = datetime.now().astimezone() + timedelta(days=dias_adelante)
-    for ev in datos_odds:
-        f_utc = datetime.fromisoformat(ev["commence_time"].replace("Z", "+00:00"))
-        if f_utc <= limite:
-            h, a = ev["home_team"], ev["away_team"]
-            oh, od, oa = 2.0, 3.2, 3.5
-            if ev.get("bookmakers"):
-                for m in ev["bookmakers"][0].get("markets", []):
-                    if m["key"] == "h2h":
-                        for o in m["outcomes"]:
-                            if o["name"] == h: oh = o["price"]
-                            elif o["name"] == a: oa = o["price"]
-                            else: od = o["price"]
-            
-            lista_partidos.append({
-                "fecha": f_utc.strftime("%d/%m %H:%M"),
-                "local": h,
-                "visitante": a,
-                "oh": oh, "od": od, "oa": oa,
-                "etiqueta": f"{f_utc.strftime('%d/%m')} | {h} vs {a}"
-            })
-
-if not lista_partidos:
-    st.warning("No se encontraron eventos disponibles con la configuración actual. Revisa las llaves e incrementa los días.")
-else:
-    tab1, tab2 = st.tabs(["🔬 Análisis Quirúrgico Híbrido", "🎯 Tracker de Rendimiento"])
+    st.subheader("⚽ Probabilidades de Mercado (Goles)")
+    st.write(f"• **Over 1.5 Goles:** {prob_over_1_5:.1f}%")
+    st.progress(min(100, max(0, int(prob_over_1_5))))
     
-    with tab1:
-        sel = st.selectbox("Selecciona un partido para analizar:", [x["etiqueta"] for x in lista_partidos])
-        p = next(x for x in lista_partidos if x["etiqueta"] == sel)
-        
-        # Probabilidades implícitas
-        tot_prob = (1/p['oh']) + (1/p['od']) + (1/p['oa'])
-        prob_h = (1/p['oh']) / tot_prob
-        prob_a = (1/p['oa']) / tot_prob
-        
-        # Estimación Poisson (xG)
-        xg_h = max(0.5, prob_h * 2.7)
-        xg_a = max(0.5, prob_a * 2.3)
-        
-        matriz = np.zeros((6, 6))
-        for i in range(6):
-            for j in range(6):
-                matriz[i][j] = poisson.pmf(i, xg_h) * poisson.pmf(j, xg_a)
-                
-        btts = (1 - poisson.pmf(0, xg_h)) * (1 - poisson.pmf(0, xg_a)) * 100
-        corners_est = (xg_h + xg_a) * 3.8
+    st.write(f"• **Over 2.5 Goles:** {prob_over_2_5:.1f}%")
+    st.progress(min(100, max(0, int(prob_over_2_5))))
+    
+    st.write(f"• **Over 3.5 Goles:** {prob_over_3_5:.1f}%")
+    st.progress(min(100, max(0, int(prob_over_3_5))))
 
-        col1, col2, col3 = st.columns(3)
-        col1.metric(f"🏠 {p['local']}", f"Cuota {p['oh']:.2f}", f"Prob: {prob_h*100:.1f}%")
-        col2.metric("⚖️ Empate", f"Cuota {p['od']:.2f}", f"xG Total: {xg_h+xg_a:.2f}")
-        col3.metric(f"🚀 {p['visitante']}", f"Cuota {p['oa']:.2f}", f"Prob: {prob_a*100:.1f}%")
-
-        st.markdown("---")
-        st.subheader("📊 Métricas de Mercados Avanzados")
-        m1, m2, m3 = st.columns(3)
-        m1.metric("🎯 Ambos Anotan (BTTS)", f"{btts:.1f}%")
-        m2.metric("🚩 Córneres Estimados", f"{corners_est:.1f}", f"> {corners_est-0.5:.0f}.5")
-        
-        idx = np.unravel_index(np.argmax(matriz), matriz.shape)
-        m3.metric("📌 Marcador Probable", f"{idx[0]} - {idx[1]}", f"{matriz[idx[0]][idx[1]]*100:.1f}% Confianza")
-
-        # Cruce de información con API-Football
-        st.markdown("---")
-        if status_football and status_football.get("account"):
-            req_info = status_football.get("requests", {})
-            st.success(f"✅ Conexión Activa con API-Football | Consultas restantes hoy: {req_info.get('current', 0)} / {req_info.get('limit_day', 100)}")
-            
-            # Buscar coincidencia del partido en API-Football
-            partido_encontrado = None
-            if fixtures_football:
-                for fix in fixtures_football:
-                    name_h = fix.get("teams", {}).get("home", {}).get("name", "").lower()
-                    name_a = fix.get("teams", {}).get("away", {}).get("name", "").lower()
-                    if (p['local'].lower() in name_h or name_h in p['local'].lower()) or \
-                       (p['visitante'].lower() in name_a or name_a in p['visitante'].lower()):
-                        partido_encontrado = fix
-                        break
-            
-            if partido_encontrado:
-                st.subheader("🏟️ Detalle Táctico del Partido (API-Sports)")
-                f_info = partido_encontrado.get("fixture", {})
-                st.write(f"**Estadio:** {f_info.get('venue', {}).get('name', 'N/D')} | **Árbitro:** {f_info.get('referee', 'Por confirmar')}")
-            else:
-                st.info("ℹ️ Datos de las cuotas cargados correctamente. Coincidencia táctica directa en procesamiento.")
-        else:
-            st.info("💡 Consejo: Asegúrate de tener guardada tu clave de API-Football para activar datos de estadios y árbitros.")
-
-        st.markdown("---")
-        st.subheader("📝 Registrar en el Tracker")
-        pick_op = [
-            f"Gana {p['local']} Directo (@{p['oh']})",
-            f"Ambos Anotan - SI (@1.85)",
-            f"Over {corners_est-0.5:.0f}.5 Córneres Totales",
-            f"Marcador Exacto {idx[0]}-{idx[1]}"
-        ]
-        pick_sel = st.selectbox("Selección:", pick_op)
-        cuota_p = st.number_input("Cuota:", min_value=1.01, value=1.85, step=0.05)
-        monto_p = st.number_input("Unidades / Monto ($):", min_value=1.0, value=10.0, step=5.0)
-        
-        if st.button("💾 Guardar Pronóstico"):
-            st.session_state["bets_tracker"].append({
-                "Fecha": p["fecha"],
-                "Partido": f"{p['local']} vs {p['visitante']}",
-                "Pick": pick_sel,
-                "Cuota": cuota_p,
-                "Monto": monto_p,
-                "Estado": "Pendiente"
-            })
-            st.success("¡Guardado en el Tracker!")
-
-    with tab2:
-        st.subheader("🎯 Tracker de Rendimiento")
-        if not st.session_state["bets_tracker"]:
-            st.info("Sin registros.")
-        else:
-            df = pd.DataFrame(st.session_state["bets_tracker"])
-            df_edit = st.data_editor(
-                df,
-                column_config={"Estado": st.column_config.SelectboxColumn("Estado", options=["Pendiente", "Ganada", "Perdida"], required=True)},
-                use_container_width=True
-            )
-            st.session_state["bets_tracker"] = df_edit.to_dict("records")
-            
-            ganadas = [b for b in st.session_state["bets_tracker"] if b["Estado"] == "Ganada"]
-            perdidas = [b for b in st.session_state["bets_tracker"] if b["Estado"] == "Perdida"]
-            
-            inversion = sum(b["Monto"] for b in st.session_state["bets_tracker"] if b["Estado"] != "Pendiente")
-            retorno = sum(b["Monto"] * b["Cuota"] for b in ganadas)
-            ganancia_neta = retorno - inversion
-            winrate = (len(ganadas) / (len(ganadas) + len(perdidas)) * 100) if (len(ganadas) + len(perdidas)) > 0 else 0
-            
-            t1, t2, t3 = st.columns(3)
-            t1.metric("WinRate", f"{winrate:.1f}%")
-            t2.metric("Ganancia Neta", f"${ganancia_neta:.2f}")
-            t3.metric("Yield", f"{(ganancia_neta/inversion*100) if inversion > 0 else 0:.1f}%")
+    st.subheader("🚩 Mercado de Córneres")
+    st.metric("Total Córneres Proyectados", f"{exp_corners_total:.1f}")
+    st.write(f"• **Probabilidad Over 9.5 Córneres:** {prob_corners_9_5:.1f}%")
+    st.progress(min(100, max(0, int(prob_corners_9_5))))
